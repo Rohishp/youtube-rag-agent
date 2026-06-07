@@ -1,0 +1,4 @@
+openai==2.38.0
+chromadb>=0.5.0
+pydantic==2.13.4
+python-dotenv>=1.0.0
