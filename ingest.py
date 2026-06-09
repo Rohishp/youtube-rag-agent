@@ -294,6 +294,79 @@ def ingest_sample_data():
     return results
 
 
+def ingest_from_transcripts(transcripts_dir: str) -> dict:
+    """
+    Ingest all transcript JSON files saved by the research agent.
+
+    The research agent saves transcripts to output/transcripts/{video_id}.json
+    Each file has: video_id, transcript, niche, char_count, saved_at
+
+    This function reads all those files and indexes them into the vector store.
+    This is how real transcript content (actual spoken words) gets into the
+    knowledge base — not just metadata and descriptions.
+    """
+    from tools.indexer import index_transcript
+
+    transcripts_path = Path(transcripts_dir)
+    if not transcripts_path.exists():
+        return {"error": f"Directory not found: {transcripts_dir}", "indexed": 0}
+
+    json_files = list(transcripts_path.glob("*.json"))
+    if not json_files:
+        return {"error": f"No JSON files found in: {transcripts_dir}", "indexed": 0}
+
+    print(f"\nFound {len(json_files)} transcript files in {transcripts_dir}")
+    print("-" * 40)
+
+    indexed = 0
+    skipped = 0
+
+    for file_path in json_files:
+        try:
+            with open(file_path, encoding="utf-8") as f:
+                data = json.load(f)
+
+            transcript_text = data.get("transcript", "")
+            if not transcript_text or len(transcript_text.split()) < 50:
+                print(f"  ✗ Skipped {file_path.name} — transcript too short")
+                skipped += 1
+                continue
+
+            # Use niche from the saved file
+            # If unknown, use "general_content" — never use the video ID as a niche name
+            # because video IDs as niches pollute the knowledge base structure
+            niche = data.get("niche", "general_content")
+            if niche == "unknown" or not niche:
+                niche = "general_content"
+
+            result = index_transcript(
+                transcript=transcript_text,
+                video_id=data["video_id"],
+                title=data.get("title", data["video_id"]),
+                channel_name=data.get("channel_name", "unknown"),
+                niche=niche,
+                view_count=data.get("view_count", 0),
+                published_at=data.get("published_at", ""),
+            )
+
+            if result["status"] == "indexed":
+                indexed += 1
+            elif result["status"] == "already_indexed":
+                skipped += 1
+                print(f"  ~ Already indexed: {data.get('title', data['video_id'])}")
+
+        except Exception as e:
+            print(f"  ✗ Failed to process {file_path.name}: {e}")
+            skipped += 1
+
+    return {
+        "directory": transcripts_dir,
+        "files_found": len(json_files),
+        "indexed": indexed,
+        "skipped": skipped,
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description="Ingest transcript data into the knowledge base")
     parser.add_argument(
@@ -306,6 +379,11 @@ def main():
         type=str,
         nargs="+",
         help="Path(s) to research agent brief JSON files. Supports glob patterns."
+    )
+    parser.add_argument(
+        "--from-transcripts",
+        type=str,
+        help="Path to folder containing transcript JSON files saved by the research agent. Example: ../youtube_research_agent/output/transcripts/"
     )
     parser.add_argument(
         "--stats",
@@ -333,7 +411,6 @@ def main():
         print(f"\n✓ Sample data ingested: {len(results)} transcripts indexed")
 
     if args.from_research:
-        # Expand glob patterns
         paths = []
         for pattern in args.from_research:
             expanded = glob.glob(pattern)
@@ -346,6 +423,16 @@ def main():
                 continue
             result = ingest_from_research_brief(path)
             print(f"  ✓ {result['niche']}: {result['items_indexed']} items indexed")
+
+    if args.from_transcripts:
+        result = ingest_from_transcripts(args.from_transcripts)
+        if "error" in result:
+            print(f"\n✗ {result['error']}")
+        else:
+            print(f"\n✓ Transcripts ingested:")
+            print(f"  Files found:  {result['files_found']}")
+            print(f"  Newly indexed: {result['indexed']}")
+            print(f"  Skipped:      {result['skipped']}")
 
     # Show final stats
     stats = get_index_stats()
